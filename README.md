@@ -8,6 +8,7 @@ It avoids MotionEye, MMAL, V4L2 compatibility wrappers, Flask, OpenCV, and datab
 
 - Uses `rpicam-vid` directly, so it matches current Raspberry Pi OS camera architecture.
 - Detects motion from low-resolution luma-frame differences.
+- Shows a live local preview from the same low-resolution motion frames.
 - Records clips during configured time windows.
 - Stores recordings by date under `recordings/`.
 - Serves a local web portal for playback, deletion, and basic tuning.
@@ -41,6 +42,8 @@ Open:
 ```text
 http://<pi-ip-address>:8080/
 ```
+
+The portal opens on the live feed. This preview is intentionally the low-resolution monitoring stream, so it is lightweight and does not start a second camera process. When CamHB records a high-resolution clip, the live preview may briefly hold on the last monitor frame until recording finishes and monitoring resumes.
 
 ## Install As A Service
 
@@ -153,6 +156,8 @@ If motion is missed:
 - Increase `monitor_fps` to `5` or `6`.
 
 The detector intentionally favors simple frame-difference logic. It is lightweight and transparent, but it will still react to lighting changes, shadows, rain, headlights, and camera shake.
+
+The live feed uses the same monitoring settings. Increase `monitor_fps` for smoother preview, or lower it to reduce CPU and network use.
 
 ## Security
 
