@@ -1,22 +1,24 @@
 # CamHB
 
-CamHB is an ultra lightweight Raspberry Pi security camera service for CSI ribbon cameras on the modern `rpicam` / `libcamera` stack.
+CamHB is an ultra lightweight Raspberry Pi security camera service for CSI ribbon cameras on the modern `Picamera2` / `libcamera` stack.
 
-It avoids MotionEye, MMAL, V4L2 compatibility wrappers, Flask, OpenCV, and databases. One Python process runs a local web portal, watches low-resolution YUV frames from `rpicam-vid`, records when motion is detected, and lets you review or delete clips in a browser.
+It avoids MotionEye, MMAL, V4L2 compatibility wrappers, Flask, OpenCV, and databases. One Python process owns the camera, runs a local web portal, shows a live low-resolution preview, detects motion from low-resolution frames, and writes high-resolution clips from a circular pre-roll buffer.
 
 ## What It Does
 
-- Uses `rpicam-vid` directly, so it matches current Raspberry Pi OS camera architecture.
+- Uses `Picamera2` directly, so it matches current Raspberry Pi OS camera architecture.
+- Keeps one camera pipeline running for live preview, motion detection, and recording.
 - Detects motion from low-resolution luma-frame differences.
-- Shows a live local preview from the same low-resolution motion frames.
-- Records clips during configured time windows.
+- Shows a constant local preview from the same low-resolution motion frames.
+- Records high-resolution MP4 clips during configured time windows.
+- Includes roughly `pre_record_seconds` of footage before detected motion.
 - Stores recordings by date under `recordings/`.
 - Serves a local web portal for playback, deletion, and basic tuning.
 - Prunes old footage by retention days and maximum storage size.
 
 ## Requirements
 
-- Raspberry Pi OS with `rpicam-apps`.
+- Raspberry Pi OS with `rpicam-apps` and `python3-picamera2`.
 - A working CSI ribbon camera verified with:
 
 ```bash
@@ -24,11 +26,11 @@ rpicam-hello
 rpicam-still -o test.jpg
 ```
 
-- Python 3. No Python packages are required.
+- Python 3. Use Raspberry Pi OS packages; do not install Picamera2 with `pip`.
 
-For MP4 output on Raspberry Pi 4 or earlier, `rpicam-vid --codec libav` must be available. CamHB falls back to raw `.h264` clips if MP4 recording fails and `fallback_to_h264` is true. Browser playback is best with MP4.
+CamHB records MP4 clips through Picamera2's circular output path. The high-resolution encoder stays warm so clips can include footage from just before motion was detected.
 
-Raspberry Pi's camera docs show that `rpicam-vid` supports uncompressed `yuv420` output and MP4/libav recording, which are the two pieces CamHB uses.
+Raspberry Pi's Picamera2 circular output supports time-shifted recording to outputs such as MP4, which is the pattern CamHB now uses.
 
 ## Quick Start
 
@@ -43,7 +45,7 @@ Open:
 http://<pi-ip-address>:8080/
 ```
 
-The portal opens on the live feed. This preview is intentionally the low-resolution monitoring stream, so it is lightweight and does not start a second camera process. When CamHB records a high-resolution clip, the live preview may briefly hold on the last monitor frame until recording finishes and monitoring resumes.
+The portal opens on the live feed. This preview is intentionally the low-resolution monitoring stream, so it is lightweight and does not start a second camera process. Recording no longer halts the live feed.
 
 ## Install As A Service
 
@@ -52,7 +54,7 @@ Clone the project on the Pi:
 ```bash
 CAMHB_USER="${SUDO_USER:-$USER}"
 sudo apt update
-sudo apt install -y git python3 rpicam-apps
+sudo apt install -y git python3 python3-picamera2 rpicam-apps
 sudo usermod -aG video "$CAMHB_USER"
 sudo install -d -o "$CAMHB_USER" -g video /opt/camhb /etc/camhb /var/lib/camhb/recordings
 sudo -u "$CAMHB_USER" git clone https://github.com/SydFloyd/CamHB.git /opt/camhb
@@ -104,16 +106,17 @@ sudo journalctl -u camhb -f
 
 ## Troubleshooting
 
-If the log shows `Pipeline handler in use by another process`, update CamHB and restart:
+If the log shows `Pipeline handler in use by another process`, stop any other camera command and restart CamHB:
 
 ```bash
-CAMHB_USER="${SUDO_USER:-$USER}"
-sudo -u "$CAMHB_USER" git -C /opt/camhb pull --ff-only
+sudo systemctl stop camhb
+pkill -f rpicam || true
+pkill -f libcamera || true
 sudo systemctl restart camhb
 sudo journalctl -u camhb -f
 ```
 
-That error means libcamera thinks another process still owns the CSI camera. CamHB stops its low-resolution monitor before starting a recording, so the usual cause after this fix is a separate camera command still running in another shell.
+That error means libcamera thinks another process still owns the CSI camera. CamHB itself now uses a single long-running camera pipeline, so the usual cause is a separate command still running in another shell.
 
 ## Schedule Format
 
@@ -159,6 +162,8 @@ The detector intentionally favors simple frame-difference logic. It is lightweig
 
 The live feed uses the same monitoring settings. Increase `monitor_fps` for smoother preview, or lower it to reduce CPU and network use.
 
+`pre_record_seconds` controls how much footage before motion is included in each clip. The default is `1`, which keeps storage use low while catching the beginning of movement.
+
 ## Security
 
 This is intended for a trusted local network. Do not expose it directly to the internet.
@@ -171,7 +176,7 @@ http://<pi-ip-address>:8080/?token=<your-token>
 
 ## Expected Reliability Versus MotionEye
 
-For your specific problem, the expected camera-connection reliability should be better than MotionEye because CamHB talks to `rpicam-vid` directly instead of asking MotionEye/Motion to enumerate the CSI camera through older MMAL/V4L2 expectations.
+For your specific problem, the expected camera-connection reliability should be better than MotionEye because CamHB talks to the modern Picamera2/libcamera stack directly instead of asking MotionEye/Motion to enumerate the CSI camera through older MMAL/V4L2 expectations.
 
 Overall maturity is lower. MotionEye is a full surveillance product with years of field use, more camera types, more UI features, and more edge-case handling. CamHB is intentionally tiny and should be easier to reason about, but it will need tuning in your physical scene.
 
