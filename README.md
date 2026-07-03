@@ -47,13 +47,15 @@ http://<pi-ip-address>:8080/
 Clone the project on the Pi:
 
 ```bash
+CAMHB_USER="${SUDO_USER:-$USER}"
 sudo apt update
 sudo apt install -y git python3 rpicam-apps
-sudo install -d -o pi -g video /opt/camhb /etc/camhb /var/lib/camhb/recordings
-sudo -u pi git clone https://github.com/SydFloyd/CamHB.git /opt/camhb
+sudo usermod -aG video "$CAMHB_USER"
+sudo install -d -o "$CAMHB_USER" -g video /opt/camhb /etc/camhb /var/lib/camhb/recordings
+sudo -u "$CAMHB_USER" git clone https://github.com/SydFloyd/CamHB.git /opt/camhb
 cp /opt/camhb/config.example.json /etc/camhb/config.json
-sudo cp /opt/camhb/systemd/camhb.service /etc/systemd/system/camhb.service
-sudo chown -R pi:video /etc/camhb /var/lib/camhb
+sudo sed "s/^User=.*/User=$CAMHB_USER/" /opt/camhb/systemd/camhb.service | sudo tee /etc/systemd/system/camhb.service >/dev/null
+sudo chown -R "$CAMHB_USER":video /etc/camhb /var/lib/camhb
 ```
 
 Edit `/etc/camhb/config.json`, especially `host`, `port`, `data_dir`, and `active_windows`. For the systemd install, set:
@@ -62,7 +64,7 @@ Edit `/etc/camhb/config.json`, especially `host`, `port`, `data_dir`, and `activ
 "data_dir": "/var/lib/camhb/recordings"
 ```
 
-If your user is not `pi`, change the `User=` line in `systemd/camhb.service`.
+The install commands patch the service to run as your current Pi user. On your Pi that should be `admin`, not `pi`.
 
 Then enable it:
 
@@ -77,8 +79,21 @@ sudo journalctl -u camhb -f
 Pull updates on the Pi, then restart the service:
 
 ```bash
-sudo -u pi git -C /opt/camhb pull --ff-only
-sudo cp /opt/camhb/systemd/camhb.service /etc/systemd/system/camhb.service
+CAMHB_USER="${SUDO_USER:-$USER}"
+sudo -u "$CAMHB_USER" git -C /opt/camhb pull --ff-only
+sudo sed "s/^User=.*/User=$CAMHB_USER/" /opt/camhb/systemd/camhb.service | sudo tee /etc/systemd/system/camhb.service >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl restart camhb
+sudo journalctl -u camhb -f
+```
+
+If you already installed the service and see `status=217/USER`, patch the installed unit in place:
+
+```bash
+CAMHB_USER="${SUDO_USER:-$USER}"
+sudo usermod -aG video "$CAMHB_USER"
+sudo sed -i "s/^User=.*/User=$CAMHB_USER/" /etc/systemd/system/camhb.service
+sudo chown -R "$CAMHB_USER":video /etc/camhb /var/lib/camhb
 sudo systemctl daemon-reload
 sudo systemctl restart camhb
 sudo journalctl -u camhb -f
