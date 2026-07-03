@@ -11,7 +11,6 @@ import mimetypes
 import os
 import posixpath
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -45,14 +44,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "record_width": 1280,
     "record_height": 720,
     "record_fps": 15,
+    "pre_record_seconds": 1,
     "record_seconds": 20,
     "cooldown_seconds": 5,
     "bitrate": 2_000_000,
-    "container": "mp4",
-    "fallback_to_h264": True,
     "retention_days": 14,
     "max_storage_mb": 20_480,
-    "rpicam_vid": "rpicam-vid",
 }
 
 
@@ -65,10 +62,10 @@ EDITABLE_KEYS = {
     "record_width",
     "record_height",
     "record_fps",
+    "pre_record_seconds",
     "record_seconds",
     "cooldown_seconds",
     "bitrate",
-    "container",
     "retention_days",
     "max_storage_mb",
 }
@@ -310,7 +307,11 @@ INDEX_HTML = r"""<!doctype html>
         <form id="settings" class="settings">
           <div class="grid2">
             <label>Clip seconds<input name="record_seconds" type="number" min="2" max="600"></label>
+            <label>Pre-roll<input name="pre_record_seconds" type="number" min="1" max="10"></label>
+          </div>
+          <div class="grid2">
             <label>Cooldown<input name="cooldown_seconds" type="number" min="0" max="600"></label>
+            <label>Bitrate<input name="bitrate" type="number" min="250000" max="25000000" step="250000"></label>
           </div>
           <div class="grid2">
             <label>Motion threshold<input name="motion_threshold" type="number" min="1" max="80"></label>
@@ -551,29 +552,6 @@ def is_active_now(windows: list[dict[str, Any]], now: datetime | None = None) ->
     return False
 
 
-def exact_read(stream: Any, length: int) -> bytes | None:
-    parts = []
-    remaining = length
-    while remaining > 0:
-        chunk = stream.read(remaining)
-        if not chunk:
-            return None
-        parts.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(parts)
-
-
-def terminate_process(proc: subprocess.Popen[bytes] | None) -> None:
-    if proc is None or proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=4)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=4)
-
-
 class CameraService:
     def __init__(self, config_path: Path) -> None:
         self.config_path = config_path
@@ -583,13 +561,12 @@ class CameraService:
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self.run, name="camhb-camera", daemon=True)
-        self.monitor_proc: subprocess.Popen[bytes] | None = None
-        self.record_proc: subprocess.Popen[bytes] | None = None
         self.active = False
         self.recording = False
         self.last_motion: float | None = None
         self.last_error = ""
         self.current_clip = ""
+        self.backend = "picamera2"
         self.latest_frame: bytes | None = None
         self.latest_frame_width = int(self.config["monitor_width"])
         self.latest_frame_height = int(self.config["monitor_height"])
@@ -600,8 +577,6 @@ class CameraService:
 
     def stop(self) -> None:
         self.stop_event.set()
-        terminate_process(self.monitor_proc)
-        terminate_process(self.record_proc)
         self.thread.join(timeout=8)
 
     def update_settings(self, changes: dict[str, Any]) -> None:
@@ -622,6 +597,7 @@ class CameraService:
                 "last_motion": self.last_motion,
                 "last_error": self.last_error,
                 "current_clip": self.current_clip,
+                "backend": self.backend,
                 "latest_frame_at": self.latest_frame_at,
                 "config": public_config,
             }
@@ -671,152 +647,131 @@ class CameraService:
         logging.info("camera thread started")
         while not self.stop_event.is_set():
             try:
-                self.prune_storage()
-                with self.lock:
-                    windows = list(self.config.get("active_windows", []))
-                active = is_active_now(windows)
-                with self.lock:
-                    self.active = active
-                if not active:
-                    time.sleep(2)
-                    continue
-                self.monitor_until_motion()
+                self.run_picamera_loop()
             except Exception as exc:  # noqa: BLE001 - keep daemon alive
                 logging.exception("camera loop failed")
                 with self.lock:
                     self.last_error = str(exc)
                     self.active = False
                     self.recording = False
-                terminate_process(self.monitor_proc)
-                terminate_process(self.record_proc)
                 time.sleep(5)
 
-    def monitor_until_motion(self) -> None:
+    def run_picamera_loop(self) -> None:
+        try:
+            from picamera2 import Picamera2
+            from picamera2.encoders import H264Encoder
+            from picamera2.outputs import CircularOutput2, PyavOutput
+        except ImportError as exc:
+            raise RuntimeError("CamHB now requires python3-picamera2 on the Raspberry Pi") from exc
+
         cfg = self.snapshot_config()
-        width = int(cfg["monitor_width"])
-        height = int(cfg["monitor_height"])
-        frame_size = width * height * 3 // 2
-        y_size = width * height
-        stride = max(1, int(cfg["sample_stride"]))
-        cmd = [
-            str(cfg["rpicam_vid"]),
-            "-n",
-            "-t",
-            "0",
-            "--camera",
-            str(cfg["camera"]),
-            "--width",
-            str(width),
-            "--height",
-            str(height),
-            "--framerate",
-            str(cfg["monitor_fps"]),
-            "--codec",
-            "yuv420",
-            "-o",
-            "-",
-        ]
-        logging.info("starting monitor: %s", " ".join(cmd))
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.monitor_proc = proc
+        monitor_width = int(cfg["monitor_width"])
+        monitor_height = int(cfg["monitor_height"])
+        record_width = int(cfg["record_width"])
+        record_height = int(cfg["record_height"])
+        record_fps = int(cfg["record_fps"])
+        pre_record_seconds = max(1.0, float(cfg["pre_record_seconds"]))
+
+        picam2 = Picamera2(int(cfg["camera"]))
+        main = {"size": (record_width, record_height), "format": "YUV420"}
+        lores = {"size": (monitor_width, monitor_height), "format": "YUV420"}
+        controls = {"FrameRate": record_fps}
+        video_config = picam2.create_video_configuration(main, lores=lores, controls=controls)
+        picam2.configure(video_config)
+
+        encoder = H264Encoder(bitrate=int(cfg["bitrate"]), repeat=True)
+        output = CircularOutput2(buffer_duration_ms=int(pre_record_seconds * 1000))
+        logging.info(
+            "starting picamera2 pipeline: main=%sx%s lores=%sx%s fps=%s pre=%.1fs",
+            record_width,
+            record_height,
+            monitor_width,
+            monitor_height,
+            record_fps,
+            pre_record_seconds,
+        )
+        picam2.start_recording(encoder, output)
+        self.prune_storage()
+
         previous: bytes | None = None
         frames = 0
-        motion_detected = False
+        encoding = False
+        last_motion_in_clip = 0.0
+        next_record_allowed = 0.0
         try:
             while not self.stop_event.is_set():
+                loop_started = time.monotonic()
+                dyn_cfg = self.snapshot_config()
+                output.buffer_duration_ms = int(max(1.0, float(dyn_cfg["pre_record_seconds"])) * 1000)
+                post_motion_seconds = max(1.0, float(dyn_cfg["record_seconds"]))
+                cooldown_seconds = max(0.0, float(dyn_cfg["cooldown_seconds"]))
+                monitor_interval = 1.0 / max(1.0, float(dyn_cfg["monitor_fps"]))
+                stride = max(1, int(dyn_cfg["sample_stride"]))
                 with self.lock:
-                    still_active = is_active_now(self.config.get("active_windows", []))
+                    still_active = is_active_now(dyn_cfg.get("active_windows", []))
                     self.active = still_active
-                if not still_active:
-                    return
-                frame = exact_read(proc.stdout, frame_size) if proc.stdout else None
-                if frame is None:
-                    stderr = read_process_stderr(proc)
-                    raise RuntimeError(f"monitor stopped unexpectedly: {stderr}")
-                y_plane = frame[:y_size]
+
+                frame = picam2.capture_array("lores")
+                y_plane = frame[:monitor_height, :monitor_width].tobytes()
                 with self.lock:
                     self.latest_frame = y_plane
-                    self.latest_frame_width = width
-                    self.latest_frame_height = height
+                    self.latest_frame_width = monitor_width
+                    self.latest_frame_height = monitor_height
                     self.latest_frame_at = time.time()
-                frames += 1
-                if previous is not None and frames > int(cfg["warmup_frames"]):
-                    ratio = changed_ratio(previous, y_plane, stride, int(cfg["motion_threshold"]))
-                    if ratio >= float(cfg["motion_ratio"]):
-                        self.last_motion = time.time()
-                        logging.info("motion detected ratio=%.4f", ratio)
-                        motion_detected = True
-                        break
-                previous = y_plane
-        finally:
-            terminate_process(proc)
-            self.monitor_proc = None
-        if motion_detected and not self.stop_event.is_set():
-            time.sleep(0.5)
-            self.record_clip()
 
-    def record_clip(self) -> None:
-        cfg = self.snapshot_config()
+                frames += 1
+                motion = False
+                if previous is not None and frames > int(dyn_cfg["warmup_frames"]):
+                    ratio = changed_ratio(previous, y_plane, stride, int(dyn_cfg["motion_threshold"]))
+                    motion = still_active and ratio >= float(dyn_cfg["motion_ratio"])
+                    if motion:
+                        now = time.time()
+                        self.last_motion = now
+                        last_motion_in_clip = now
+                        logging.info("motion detected ratio=%.4f", ratio)
+                        if not encoding and now >= next_record_allowed:
+                            output_path = self.open_motion_output(output, PyavOutput, cfg)
+                            encoding = True
+                            with self.lock:
+                                self.recording = True
+                                self.current_clip = str(output_path)
+
+                if encoding:
+                    now = time.time()
+                    if not still_active or now - last_motion_in_clip >= post_motion_seconds:
+                        output.close_output()
+                        encoding = False
+                        next_record_allowed = now + cooldown_seconds
+                        with self.lock:
+                            self.recording = False
+                            self.current_clip = ""
+                        self.prune_storage()
+
+                previous = y_plane
+
+                elapsed = time.monotonic() - loop_started
+                if elapsed < monitor_interval:
+                    self.stop_event.wait(monitor_interval - elapsed)
+        finally:
+            if encoding:
+                try:
+                    output.close_output()
+                except Exception:  # noqa: BLE001
+                    logging.exception("failed to close active output")
+            picam2.stop_recording()
+            with self.lock:
+                self.recording = False
+                self.current_clip = ""
+
+    def open_motion_output(self, output: Any, output_cls: Any, cfg: dict[str, Any]) -> Path:
         now = datetime.now().astimezone()
         day_dir = self.data_dir / now.strftime("%Y-%m-%d")
         day_dir.mkdir(parents=True, exist_ok=True)
-        container = str(cfg["container"]).lower()
-        if container not in {"mp4", "h264"}:
-            container = "mp4"
+        container = "mp4"
         path = day_dir / f"{now.strftime('%H%M%S')}.{container}"
-        ok = self.run_record_command(path, container, cfg)
-        if not ok and container == "mp4" and cfg.get("fallback_to_h264", True):
-            fallback = path.with_suffix(".h264")
-            ok = self.run_record_command(fallback, "h264", cfg)
-        with self.lock:
-            self.recording = False
-            self.current_clip = ""
-        time.sleep(float(cfg["cooldown_seconds"]))
-        self.prune_storage()
-
-    def run_record_command(self, path: Path, container: str, cfg: dict[str, Any]) -> bool:
-        cmd = [
-            str(cfg["rpicam_vid"]),
-            "-n",
-            "--camera",
-            str(cfg["camera"]),
-            "-t",
-            str(int(float(cfg["record_seconds"]) * 1000)),
-            "--width",
-            str(cfg["record_width"]),
-            "--height",
-            str(cfg["record_height"]),
-            "--framerate",
-            str(cfg["record_fps"]),
-            "--bitrate",
-            str(cfg["bitrate"]),
-            "-o",
-            str(path),
-        ]
-        if container == "mp4":
-            cmd[1:1] = ["--codec", "libav"]
-        logging.info("recording: %s", " ".join(cmd))
-        with self.lock:
-            self.recording = True
-            self.current_clip = str(path)
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        self.record_proc = proc
-        try:
-            rc = proc.wait(timeout=float(cfg["record_seconds"]) + 20)
-        except subprocess.TimeoutExpired:
-            terminate_process(proc)
-            rc = 124
-        finally:
-            self.record_proc = None
-        if rc != 0:
-            stderr = read_process_stderr(proc)
-            with self.lock:
-                self.last_error = f"record failed: {stderr}"
-            logging.error("record failed rc=%s stderr=%s", rc, stderr)
-            if path.exists() and path.stat().st_size == 0:
-                path.unlink()
-            return False
-        return path.exists() and path.stat().st_size > 0
+        output.open_output(output_cls(str(path)))
+        logging.info("recording with pre-roll: %s", path)
+        return path
 
     def prune_storage(self) -> None:
         cfg = self.snapshot_config()
@@ -853,15 +808,6 @@ def changed_ratio(previous: bytes, current: bytes, stride: int, threshold: int) 
     return changed / max(1, total)
 
 
-def read_process_stderr(proc: subprocess.Popen[bytes]) -> str:
-    if not proc.stderr:
-        return ""
-    try:
-        return proc.stderr.read().decode("utf-8", errors="replace").strip()[-1200:]
-    except Exception:  # noqa: BLE001
-        return ""
-
-
 def validate_config(config: dict[str, Any]) -> None:
     if not isinstance(config.get("active_windows", []), list):
         raise ValueError("active_windows must be a list")
@@ -871,7 +817,7 @@ def validate_config(config: dict[str, Any]) -> None:
         for day in window.get("days", list(range(7))):
             if not isinstance(day, int) or day < 0 or day > 6:
                 raise ValueError("days must use 0=Monday through 6=Sunday")
-    for key in ("record_seconds", "cooldown_seconds", "monitor_fps", "record_fps"):
+    for key in ("record_seconds", "pre_record_seconds", "cooldown_seconds", "monitor_fps", "record_fps"):
         if float(config[key]) < 0:
             raise ValueError(f"{key} must be positive")
     if float(config["motion_ratio"]) <= 0:
@@ -1022,7 +968,7 @@ class CamServer(ThreadingHTTPServer):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Tiny motion security camera for Raspberry Pi rpicam.")
+    parser = argparse.ArgumentParser(description="Tiny motion security camera for Raspberry Pi Picamera2.")
     parser.add_argument("--config", default=os.environ.get("CAMHB_CONFIG", "config.json"))
     parser.add_argument("--log-level", default=os.environ.get("CAMHB_LOG_LEVEL", "INFO"))
     return parser.parse_args()
