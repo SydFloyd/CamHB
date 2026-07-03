@@ -21,12 +21,10 @@
   "record_width": 1280,
   "record_height": 720,
   "record_fps": 15,
+  "pre_record_seconds": 1,
   "record_seconds": 20,
   "cooldown_seconds": 5,
   "bitrate": 2000000,
-  "container": "mp4",
-  "fallback_to_h264": true,
   "retention_days": 14,
-  "max_storage_mb": 20480,
-  "rpicam_vid": "rpicam-vid"
+  "max_storage_mb": 20480
 }
