@@ -99,6 +99,19 @@ sudo systemctl restart camhb
 sudo journalctl -u camhb -f
 ```
 
+## Troubleshooting
+
+If the log shows `Pipeline handler in use by another process`, update CamHB and restart:
+
+```bash
+CAMHB_USER="${SUDO_USER:-$USER}"
+sudo -u "$CAMHB_USER" git -C /opt/camhb pull --ff-only
+sudo systemctl restart camhb
+sudo journalctl -u camhb -f
+```
+
+That error means libcamera thinks another process still owns the CSI camera. CamHB stops its low-resolution monitor before starting a recording, so the usual cause after this fix is a separate camera command still running in another shell.
+
 ## Schedule Format
 
 `active_windows` is a list. Empty means always armed.
