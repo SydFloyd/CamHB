@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import mimetypes
@@ -146,7 +147,7 @@ INDEX_HTML = r"""<!doctype html>
     .viewer {
       min-width: 0;
     }
-    video {
+    video, canvas {
       width: 100%;
       max-height: 72vh;
       aspect-ratio: 16 / 9;
@@ -155,6 +156,12 @@ INDEX_HTML = r"""<!doctype html>
       border-radius: 8px;
       box-shadow: 0 18px 50px var(--shadow);
       display: block;
+    }
+    canvas {
+      image-rendering: auto;
+    }
+    .hidden {
+      display: none;
     }
     .selected {
       display: flex;
@@ -282,10 +289,12 @@ INDEX_HTML = r"""<!doctype html>
   </header>
   <main>
     <div class="viewer">
-      <video id="player" controls playsinline></video>
+      <canvas id="live" width="320" height="240"></canvas>
+      <video id="player" class="hidden" controls playsinline></video>
       <div class="selected">
-        <span id="selected">No clip selected</span>
+        <span id="selected">Live feed</span>
         <div class="toolbar">
+          <button id="show-live" class="primary">Live</button>
           <button id="refresh">Refresh</button>
           <button id="delete" class="danger">Delete</button>
         </div>
@@ -329,6 +338,8 @@ INDEX_HTML = r"""<!doctype html>
     const dotEl = document.getElementById('dot');
     const clipsEl = document.getElementById('clips');
     const player = document.getElementById('player');
+    const live = document.getElementById('live');
+    const liveCtx = live.getContext('2d');
     const selectedEl = document.getElementById('selected');
     const form = document.getElementById('settings');
     let selected = null;
@@ -379,11 +390,36 @@ INDEX_HTML = r"""<!doctype html>
         btn.innerHTML = `<span><span class="clip-name">${clip.name}</span><br><span class="clip-meta">${new Date(clip.mtime * 1000).toLocaleString()}</span></span><span class="clip-meta">${fmtBytes(clip.size)}</span>`;
         btn.addEventListener('click', () => {
           selected = clip;
+          live.classList.add('hidden');
+          player.classList.remove('hidden');
           player.src = clip.url;
           selectedEl.textContent = clip.name;
           renderClips(clips);
         });
         clipsEl.appendChild(btn);
+      }
+    }
+
+    async function refreshLive() {
+      if (live.classList.contains('hidden')) return;
+      try {
+        const frame = await api('/api/frame');
+        if (!frame.data) return;
+        if (live.width !== frame.width || live.height !== frame.height) {
+          live.width = frame.width;
+          live.height = frame.height;
+        }
+        const y = Uint8Array.from(atob(frame.data), c => c.charCodeAt(0));
+        const image = liveCtx.createImageData(frame.width, frame.height);
+        for (let i = 0, j = 0; i < y.length; i++, j += 4) {
+          image.data[j] = y[i];
+          image.data[j + 1] = y[i];
+          image.data[j + 2] = y[i];
+          image.data[j + 3] = 255;
+        }
+        liveCtx.putImageData(image, 0, 0);
+      } catch (_err) {
+        // Keep the last frame visible if the camera is busy recording.
       }
     }
 
@@ -415,18 +451,33 @@ INDEX_HTML = r"""<!doctype html>
     });
 
     document.getElementById('refresh').addEventListener('click', refresh);
+    document.getElementById('show-live').addEventListener('click', () => {
+      selected = null;
+      player.pause();
+      player.removeAttribute('src');
+      player.load();
+      player.classList.add('hidden');
+      live.classList.remove('hidden');
+      selectedEl.textContent = 'Live feed';
+      refreshLive();
+      refresh();
+    });
     document.getElementById('delete').addEventListener('click', async () => {
       if (!selected) return;
       await api('/api/delete', {method: 'POST', body: JSON.stringify({path: selected.path})});
       selected = null;
       player.removeAttribute('src');
       player.load();
-      selectedEl.textContent = 'No clip selected';
+      player.classList.add('hidden');
+      live.classList.remove('hidden');
+      selectedEl.textContent = 'Live feed';
       await refresh();
     });
 
     refresh();
+    refreshLive();
     setInterval(refresh, 5000);
+    setInterval(refreshLive, 300);
   </script>
 </body>
 </html>
@@ -539,6 +590,10 @@ class CameraService:
         self.last_motion: float | None = None
         self.last_error = ""
         self.current_clip = ""
+        self.latest_frame: bytes | None = None
+        self.latest_frame_width = int(self.config["monitor_width"])
+        self.latest_frame_height = int(self.config["monitor_height"])
+        self.latest_frame_at: float | None = None
 
     def start(self) -> None:
         self.thread.start()
@@ -567,7 +622,24 @@ class CameraService:
                 "last_motion": self.last_motion,
                 "last_error": self.last_error,
                 "current_clip": self.current_clip,
+                "latest_frame_at": self.latest_frame_at,
                 "config": public_config,
+            }
+
+    def latest_frame_payload(self) -> dict[str, Any]:
+        with self.lock:
+            if self.latest_frame is None:
+                return {
+                    "width": self.latest_frame_width,
+                    "height": self.latest_frame_height,
+                    "mtime": None,
+                    "data": "",
+                }
+            return {
+                "width": self.latest_frame_width,
+                "height": self.latest_frame_height,
+                "mtime": self.latest_frame_at,
+                "data": base64.b64encode(self.latest_frame).decode("ascii"),
             }
 
     def list_clips(self) -> list[dict[str, Any]]:
@@ -662,6 +734,11 @@ class CameraService:
                     stderr = read_process_stderr(proc)
                     raise RuntimeError(f"monitor stopped unexpectedly: {stderr}")
                 y_plane = frame[:y_size]
+                with self.lock:
+                    self.latest_frame = y_plane
+                    self.latest_frame_width = width
+                    self.latest_frame_height = height
+                    self.latest_frame_at = time.time()
                 frames += 1
                 if previous is not None and frames > int(cfg["warmup_frames"]):
                     ratio = changed_ratio(previous, y_plane, stride, int(cfg["motion_threshold"]))
@@ -837,6 +914,8 @@ class CamHandler(BaseHTTPRequestHandler):
                 self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
             elif path == "/api/status":
                 self.send_json(self.app.status())
+            elif path == "/api/frame":
+                self.send_json(self.app.latest_frame_payload())
             elif path == "/api/clips":
                 self.send_json({"clips": self.app.list_clips()})
             elif path.startswith("/media/"):
