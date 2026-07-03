@@ -649,6 +649,7 @@ class CameraService:
         self.monitor_proc = proc
         previous: bytes | None = None
         frames = 0
+        motion_detected = False
         try:
             while not self.stop_event.is_set():
                 with self.lock:
@@ -667,11 +668,15 @@ class CameraService:
                     if ratio >= float(cfg["motion_ratio"]):
                         self.last_motion = time.time()
                         logging.info("motion detected ratio=%.4f", ratio)
-                        return self.record_clip()
+                        motion_detected = True
+                        break
                 previous = y_plane
         finally:
             terminate_process(proc)
             self.monitor_proc = None
+        if motion_detected and not self.stop_event.is_set():
+            time.sleep(0.5)
+            self.record_clip()
 
     def record_clip(self) -> None:
         cfg = self.snapshot_config()
