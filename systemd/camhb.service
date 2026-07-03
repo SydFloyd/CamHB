@@ -1,0 +1,18 @@
+[Unit]
+Description=CamHB lightweight Raspberry Pi security camera
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/camhb
+ExecStart=/usr/bin/python3 /opt/camhb/camhb.py --config /etc/camhb/config.json
+Restart=always
+RestartSec=5
+User=pi
+Group=video
+SupplementaryGroups=video
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
