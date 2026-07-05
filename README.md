@@ -57,9 +57,11 @@ The example config enables a small pan/tilt mount:
 - Servo tilt range from 0 to 180 degrees, starting at 90 degrees.
 - Stepper pan range from -80 to +80 degrees around the position it is in when CamHB starts.
 
-Open **Camera Control** in the web portal and enable **Control mode** before using the arrow buttons. Control mode disarms motion recording while you move the camera and for `manual_control_settle_seconds` after you leave control mode, so manual movement does not create motion clips.
+Open **Camera Control** in the web portal and enable **Control mode** before using the arrow buttons or keyboard arrow keys. Holding an arrow button or key repeats movement until released. Control mode disarms motion recording while you move the camera and for `manual_control_settle_seconds` after you leave control mode, so manual movement does not create motion clips.
 
 If the controls move the wrong way, flip `pan_invert` or `tilt_invert` in `config.json`. If the portal says the motors are disabled in config, set `pan_tilt_enabled` to `true`. Older configs can also copy the `pan_tilt_*`, `servo_*`, `stepper_*`, `pan_*`, and `tilt_invert` fields from `config.example.json` when you want the values visible in the file.
+
+Some servos jitter when driven directly from a Raspberry Pi GPIO PWM signal. If tilt shakes in place, use a separate 5V servo supply with a shared ground, avoid driving hard against the mechanical end stops, tune `servo_min_pulse_width` and `servo_max_pulse_width`, or use a hardware-timed PWM path such as `pigpio` or a PCA9685 servo driver.
 
 ## Install As A Service
 

@@ -422,12 +422,19 @@ INDEX_HTML = r"""<!doctype html>
     const controlModeEl = document.getElementById('control-mode');
     const controlStateEl = document.getElementById('control-state');
     const moveButtons = Array.from(document.querySelectorAll('[data-move]'));
+    const keyDirections = new Map([
+      ['ArrowUp', 'up'],
+      ['ArrowDown', 'down'],
+      ['ArrowLeft', 'left'],
+      ['ArrowRight', 'right'],
+    ]);
     let selected = null;
     let settings = {};
     let control = {};
     let controlBusy = false;
     let moveInFlight = false;
     let moveTimer = null;
+    let activeMoveKey = null;
 
     async function api(path, options = {}) {
       const headers = options.headers || {};
@@ -590,19 +597,30 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
-    function startMove(event) {
-      event.preventDefault();
-      if (event.currentTarget.disabled) return;
-      const direction = event.currentTarget.dataset.move;
+    function startRepeatedMove(direction) {
       stopMove();
       moveCamera(direction);
       moveTimer = setInterval(() => moveCamera(direction), 320);
+    }
+
+    function startMove(event) {
+      event.preventDefault();
+      if (event.currentTarget.disabled) return;
+      startRepeatedMove(event.currentTarget.dataset.move);
     }
 
     function stopMove() {
       if (!moveTimer) return;
       clearInterval(moveTimer);
       moveTimer = null;
+    }
+
+    function isTypingTarget(target) {
+      return target?.closest?.('input, textarea, select, [contenteditable="true"]');
+    }
+
+    function canUseKeyboardControl() {
+      return Boolean(control.available && control.mode && !controlBusy);
     }
 
     controlModeEl.addEventListener('change', () => setControlMode(controlModeEl.checked));
@@ -615,8 +633,26 @@ INDEX_HTML = r"""<!doctype html>
         if (event.detail === 0 && !button.disabled) moveCamera(button.dataset.move);
       });
     }
+    window.addEventListener('keydown', (event) => {
+      const direction = keyDirections.get(event.key);
+      if (!direction || isTypingTarget(event.target)) return;
+      if (control.mode) event.preventDefault();
+      if (!canUseKeyboardControl()) return;
+      if (event.repeat && activeMoveKey === event.key) return;
+      activeMoveKey = event.key;
+      startRepeatedMove(direction);
+    });
+    window.addEventListener('keyup', (event) => {
+      if (!keyDirections.has(event.key) || activeMoveKey !== event.key) return;
+      event.preventDefault();
+      activeMoveKey = null;
+      stopMove();
+    });
     window.addEventListener('pointerup', stopMove);
-    window.addEventListener('blur', stopMove);
+    window.addEventListener('blur', () => {
+      activeMoveKey = null;
+      stopMove();
+    });
 
     document.getElementById('refresh').addEventListener('click', refresh);
     document.getElementById('show-live').addEventListener('click', () => {
