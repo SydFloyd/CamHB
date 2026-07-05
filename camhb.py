@@ -50,7 +50,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "bitrate": 2_000_000,
     "retention_days": 14,
     "max_storage_mb": 20_480,
-    "pan_tilt_enabled": False,
+    "pan_tilt_enabled": True,
     "servo_pin": 17,
     "servo_min_degrees": 0,
     "servo_max_degrees": 180,
@@ -469,9 +469,10 @@ INDEX_HTML = r"""<!doctype html>
       const canMove = Boolean(control.available && control.mode && !controlBusy && !moveInFlight);
       for (const button of moveButtons) button.disabled = !canMove;
       if (!control.enabled) {
-        controlStateEl.textContent = 'Disabled';
+        controlStateEl.textContent = control.mode ? 'Control mode on | motors disabled in config' : 'Motors disabled in config';
       } else if (!control.available) {
-        controlStateEl.textContent = control.error || 'Unavailable';
+        const detail = control.error || 'Unavailable';
+        controlStateEl.textContent = control.mode ? `${detail} | control mode on` : detail;
       } else {
         controlStateEl.textContent = `pan ${fmtDeg(control.pan_degrees)} deg | tilt ${fmtDeg(control.tilt_degrees)} deg`;
       }

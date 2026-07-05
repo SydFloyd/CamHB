@@ -59,7 +59,7 @@ The example config enables a small pan/tilt mount:
 
 Open **Camera Control** in the web portal and enable **Control mode** before using the arrow buttons. Control mode disarms motion recording while you move the camera and for `manual_control_settle_seconds` after you leave control mode, so manual movement does not create motion clips.
 
-If the controls move the wrong way, flip `pan_invert` or `tilt_invert` in `config.json`. If you already have an older config, copy the `pan_tilt_*`, `servo_*`, `stepper_*`, `pan_*`, and `tilt_invert` fields from `config.example.json`.
+If the controls move the wrong way, flip `pan_invert` or `tilt_invert` in `config.json`. If the portal says the motors are disabled in config, set `pan_tilt_enabled` to `true`. Older configs can also copy the `pan_tilt_*`, `servo_*`, `stepper_*`, `pan_*`, and `tilt_invert` fields from `config.example.json` when you want the values visible in the file.
 
 ## Install As A Service
 
