@@ -12,13 +12,14 @@ It avoids MotionEye, MMAL, V4L2 compatibility wrappers, Flask, OpenCV, and datab
 - Shows a constant local preview from the same low-resolution motion frames.
 - Records high-resolution MP4 clips during configured time windows.
 - Includes roughly `pre_record_seconds` of footage before detected motion.
+- Provides optional web pan/tilt controls for a GPIO stepper and servo mount.
 - Stores recordings by date under `recordings/`.
 - Serves a local web portal for playback, deletion, and basic tuning.
 - Prunes old footage by retention days and maximum storage size.
 
 ## Requirements
 
-- Raspberry Pi OS with `rpicam-apps` and `python3-picamera2`.
+- Raspberry Pi OS with `rpicam-apps`, `python3-picamera2`, `python3-gpiozero`, and `python3-lgpio`.
 - A working CSI ribbon camera verified with:
 
 ```bash
@@ -47,6 +48,19 @@ http://<pi-ip-address>:8080/
 
 The portal opens on the live feed. This preview is intentionally the low-resolution monitoring stream, so it is lightweight and does not start a second camera process. Recording no longer halts the live feed.
 
+## Pan/Tilt Control
+
+The example config enables a small pan/tilt mount:
+
+- Tilt servo signal on GP17.
+- Stepper driver IN1, IN2, IN3, and IN4 on GP18, GP23, GP24, and GP25.
+- Servo tilt range from 0 to 180 degrees, starting at 90 degrees.
+- Stepper pan range from -80 to +80 degrees around the position it is in when CamHB starts.
+
+Open **Camera Control** in the web portal and enable **Control mode** before using the arrow buttons. Control mode disarms motion recording while you move the camera and for `manual_control_settle_seconds` after you leave control mode, so manual movement does not create motion clips.
+
+If the controls move the wrong way, flip `pan_invert` or `tilt_invert` in `config.json`. If you already have an older config, copy the `pan_tilt_*`, `servo_*`, `stepper_*`, `pan_*`, and `tilt_invert` fields from `config.example.json`.
+
 ## Install As A Service
 
 Clone the project on the Pi:
@@ -54,7 +68,7 @@ Clone the project on the Pi:
 ```bash
 CAMHB_USER="${SUDO_USER:-$USER}"
 sudo apt update
-sudo apt install -y git python3 python3-picamera2 rpicam-apps
+sudo apt install -y git python3 python3-picamera2 python3-gpiozero python3-lgpio rpicam-apps
 sudo usermod -aG video "$CAMHB_USER"
 sudo install -d -o "$CAMHB_USER" -g video /opt/camhb /etc/camhb /var/lib/camhb/recordings
 sudo -u "$CAMHB_USER" git clone https://github.com/SydFloyd/CamHB.git /opt/camhb
