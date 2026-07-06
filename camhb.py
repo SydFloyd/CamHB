@@ -54,8 +54,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "stepper_pins": [18, 23, 24, 25],
     "stepper_steps_per_rev": 4096,
     "stepper_step_delay": 0.0025,
-    "pan_min_degrees": -80,
-    "pan_max_degrees": 80,
+    "pan_limit_degrees": 100,
     "pan_step_degrees": 5,
     "pan_invert": False,
     "manual_control_settle_seconds": 2,
@@ -77,6 +76,7 @@ EDITABLE_KEYS = {
     "bitrate",
     "retention_days",
     "max_storage_mb",
+    "pan_limit_degrees",
 }
 
 
@@ -386,6 +386,7 @@ INDEX_HTML = r"""<!doctype html>
             <label>FPS<input name="record_fps" type="number" min="1" max="120"></label>
             <label>Retention days<input name="retention_days" type="number" min="1" max="3650"></label>
           </div>
+          <label>Pan limit<input name="pan_limit_degrees" type="number" min="5" max="180" step="1"></label>
           <label>Active windows<textarea name="active_windows"></textarea></label>
           <button class="primary" type="submit">Save</button>
         </form>
@@ -464,7 +465,7 @@ INDEX_HTML = r"""<!doctype html>
         const detail = control.error || 'Unavailable';
         controlStateEl.textContent = control.mode ? `${detail} | control mode on` : detail;
       } else {
-        controlStateEl.textContent = `pan ${fmtDeg(control.pan_degrees)} deg`;
+        controlStateEl.textContent = `pan ${fmtDeg(control.pan_degrees)} deg / +/-${fmtDeg(control.pan_limit_degrees)} deg`;
       }
     }
 
@@ -762,10 +763,10 @@ class PanController:
         self.stepper_pins = [int(pin) for pin in config["stepper_pins"]]
         self.stepper_steps_per_rev = int(config["stepper_steps_per_rev"])
         self.stepper_step_delay = float(config["stepper_step_delay"])
-        self.pan_min = float(config["pan_min_degrees"])
-        self.pan_max = float(config["pan_max_degrees"])
-        self.pan_step = float(config["pan_step_degrees"])
-        self.pan_invert = bool(config.get("pan_invert", False))
+        self.pan_limit = self.configured_pan_limit(config)
+        self.pan_step = 0.0
+        self.pan_invert = False
+        self.update_config(config)
         self.pan_degrees = 0.0
         self.sequence_index = 0
         self._stepper_outputs: list[Any] = []
@@ -797,9 +798,23 @@ class PanController:
                 "available": self.available,
                 "error": self.error,
                 "pan_degrees": round(self.pan_degrees, 2),
-                "pan_min_degrees": self.pan_min,
-                "pan_max_degrees": self.pan_max,
+                "pan_limit_degrees": round(self.pan_limit, 2),
+                "pan_min_degrees": -round(self.pan_limit, 2),
+                "pan_max_degrees": round(self.pan_limit, 2),
             }
+
+    def update_config(self, config: dict[str, Any]) -> None:
+        with self.lock:
+            self.pan_limit = self.configured_pan_limit(config)
+            self.pan_step = float(config["pan_step_degrees"])
+            self.pan_invert = bool(config.get("pan_invert", False))
+
+    def configured_pan_limit(self, config: dict[str, Any]) -> float:
+        if "pan_limit_degrees" in config:
+            return float(config["pan_limit_degrees"])
+        low = abs(float(config.get("pan_min_degrees", -100)))
+        high = abs(float(config.get("pan_max_degrees", 100)))
+        return max(low, high)
 
     def move(self, direction: str) -> None:
         with self.lock:
@@ -817,7 +832,7 @@ class PanController:
     def move_pan(self, direction: int) -> None:
         if self.pan_invert:
             direction *= -1
-        target = clamp_float(self.pan_degrees + (self.pan_step * direction), self.pan_min, self.pan_max)
+        target = self.next_pan_target(direction)
         delta = target - self.pan_degrees
         if delta == 0:
             return
@@ -832,6 +847,19 @@ class PanController:
             time.sleep(self.stepper_step_delay)
         self.release_stepper()
         self.pan_degrees = target
+
+    def next_pan_target(self, direction: int) -> float:
+        low = -self.pan_limit
+        high = self.pan_limit
+        if self.pan_degrees > high:
+            if direction > 0:
+                return self.pan_degrees
+            return max(self.pan_degrees - self.pan_step, high)
+        if self.pan_degrees < low:
+            if direction < 0:
+                return self.pan_degrees
+            return min(self.pan_degrees + self.pan_step, low)
+        return clamp_float(self.pan_degrees + (self.pan_step * direction), low, high)
 
     def write_step(self, values: tuple[int, int, int, int]) -> None:
         for output, value in zip(self._stepper_outputs, values):
@@ -894,6 +922,7 @@ class CameraService:
                     self.config[key] = value
             validate_config(self.config)
             save_config(self.config_path, self.config)
+            self.pan_controller.update_config(self.config)
 
     def status(self) -> dict[str, Any]:
         with self.lock:
@@ -1183,9 +1212,8 @@ def validate_config(config: dict[str, Any]) -> None:
     for pin in stepper_pins:
         if not isinstance(pin, int) or pin < 0:
             raise ValueError("GPIO pins must be non-negative integers")
-    if float(config["pan_min_degrees"]) >= float(config["pan_max_degrees"]):
-        raise ValueError("pan_min_degrees must be less than pan_max_degrees")
     for key in (
+        "pan_limit_degrees",
         "stepper_steps_per_rev",
         "stepper_step_delay",
         "pan_step_degrees",

@@ -53,11 +53,11 @@ The portal opens on the live feed. This preview is intentionally the low-resolut
 The example config enables a small pan mount:
 
 - Stepper driver IN1, IN2, IN3, and IN4 on GP18, GP23, GP24, and GP25.
-- Stepper pan range from -80 to +80 degrees around the position it is in when CamHB starts.
+- Stepper pan range defaults to -100 to +100 degrees around the position it is in when CamHB starts.
 
-Open **Camera Control** in the web portal and enable **Control mode** before using the left/right arrow buttons or keyboard Left/Right keys. Holding an arrow button or key repeats movement until released. Control mode disarms motion recording while you move the camera and for `manual_control_settle_seconds` after you leave control mode, so manual movement does not create motion clips.
+Open **Camera Control** in the web portal and enable **Control mode** before using the left/right arrow buttons or keyboard Left/Right keys. Holding an arrow button or key repeats movement until released. Control mode disarms motion recording while you move the camera and for `manual_control_settle_seconds` after you leave control mode, so manual movement does not create motion clips. Use the Settings panel's **Pan limit** field to adjust the symmetric left/right range while testing.
 
-If the controls move the wrong way, flip `pan_invert` in `config.json`. If the portal says the motor is disabled in config, set `pan_enabled` to `true`. Older configs can also copy the `pan_enabled`, `stepper_*`, and `pan_*` fields from `config.example.json` when you want the values visible in the file.
+If the controls move the wrong way, flip `pan_invert` in `config.json`. If the portal says the motor is disabled in config, set `pan_enabled` to `true`. Older configs can also copy the `pan_enabled`, `stepper_*`, `pan_limit_degrees`, and `pan_step_degrees` fields from `config.example.json` when you want the values visible in the file.
 
 ## Install As A Service
 

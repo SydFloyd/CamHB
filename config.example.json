@@ -31,8 +31,7 @@
   "stepper_pins": [18, 23, 24, 25],
   "stepper_steps_per_rev": 4096,
   "stepper_step_delay": 0.0025,
-  "pan_min_degrees": -80,
-  "pan_max_degrees": 80,
+  "pan_limit_degrees": 100,
   "pan_step_degrees": 5,
   "pan_invert": false,
   "manual_control_settle_seconds": 2
