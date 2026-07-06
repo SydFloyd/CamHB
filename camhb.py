@@ -232,21 +232,42 @@ INDEX_HTML = r"""<!doctype html>
       max-height: 52vh;
       overflow: auto;
     }
+    .clip-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      width: 100%;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      align-items: stretch;
+    }
+    .clip-row:last-child { border-bottom: 0; }
+    .clip-row.active { background: #203026; }
     .clip {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
       width: 100%;
+      min-height: 0;
       text-align: left;
       border: 0;
-      border-bottom: 1px solid var(--line);
       border-radius: 0;
       background: transparent;
-      padding: 12px 14px;
+      padding: 12px 0 12px 14px;
     }
-    .clip:last-child { border-bottom: 0; }
-    .clip.active { background: #203026; }
+    .clip-delete {
+      align-self: center;
+      margin-right: 10px;
+      min-height: 32px;
+      padding: 0 9px;
+      font-size: 12px;
+    }
+    .clip-details {
+      min-width: 0;
+    }
     .clip-name {
+      display: inline-block;
+      max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -478,6 +499,24 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    function showLiveFeed() {
+      selected = null;
+      player.pause();
+      player.removeAttribute('src');
+      player.load();
+      player.classList.add('hidden');
+      live.classList.remove('hidden');
+      selectedEl.textContent = 'Live feed';
+    }
+
+    async function deleteClip(clip) {
+      await api('/api/delete', {method: 'POST', body: JSON.stringify({path: clip.path})});
+      if (selected && selected.path === clip.path) {
+        showLiveFeed();
+      }
+      await refresh();
+    }
+
     function renderClips(clips) {
       clipsEl.innerHTML = '';
       if (!clips.length) {
@@ -485,10 +524,27 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       for (const clip of clips) {
+        const row = document.createElement('div');
+        row.className = 'clip-row' + (selected && selected.path === clip.path ? ' active' : '');
+
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'clip' + (selected && selected.path === clip.path ? ' active' : '');
-        btn.innerHTML = `<span><span class="clip-name">${clip.name}</span><br><span class="clip-meta">${new Date(clip.mtime * 1000).toLocaleString()}</span></span><span class="clip-meta">${fmtBytes(clip.size)}</span>`;
+        btn.className = 'clip';
+
+        const details = document.createElement('span');
+        details.className = 'clip-details';
+        const name = document.createElement('span');
+        name.className = 'clip-name';
+        name.textContent = clip.name;
+        const meta = document.createElement('span');
+        meta.className = 'clip-meta';
+        meta.textContent = new Date(clip.mtime * 1000).toLocaleString();
+        details.append(name, document.createElement('br'), meta);
+
+        const size = document.createElement('span');
+        size.className = 'clip-meta';
+        size.textContent = fmtBytes(clip.size);
+        btn.append(details, size);
         btn.addEventListener('click', () => {
           selected = clip;
           live.classList.add('hidden');
@@ -497,7 +553,24 @@ INDEX_HTML = r"""<!doctype html>
           selectedEl.textContent = clip.name;
           renderClips(clips);
         });
-        clipsEl.appendChild(btn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'clip-delete danger';
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.setAttribute('aria-label', `Delete ${clip.name}`);
+        deleteBtn.addEventListener('click', async () => {
+          deleteBtn.disabled = true;
+          try {
+            await deleteClip(clip);
+          } catch (err) {
+            deleteBtn.disabled = false;
+            stateEl.textContent = String(err.message || err);
+          }
+        });
+
+        row.append(btn, deleteBtn);
+        clipsEl.appendChild(row);
       }
     }
 
@@ -661,26 +734,13 @@ INDEX_HTML = r"""<!doctype html>
 
     document.getElementById('refresh').addEventListener('click', refresh);
     document.getElementById('show-live').addEventListener('click', () => {
-      selected = null;
-      player.pause();
-      player.removeAttribute('src');
-      player.load();
-      player.classList.add('hidden');
-      live.classList.remove('hidden');
-      selectedEl.textContent = 'Live feed';
+      showLiveFeed();
       refreshLive();
       refresh();
     });
     document.getElementById('delete').addEventListener('click', async () => {
       if (!selected) return;
-      await api('/api/delete', {method: 'POST', body: JSON.stringify({path: selected.path})});
-      selected = null;
-      player.removeAttribute('src');
-      player.load();
-      player.classList.add('hidden');
-      live.classList.remove('hidden');
-      selectedEl.textContent = 'Live feed';
-      await refresh();
+      await deleteClip(selected);
     });
 
     refresh();
