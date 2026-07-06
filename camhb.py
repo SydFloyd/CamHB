@@ -50,14 +50,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "bitrate": 2_000_000,
     "retention_days": 14,
     "max_storage_mb": 20_480,
-    "pan_tilt_enabled": True,
-    "servo_pin": 17,
-    "servo_min_degrees": 0,
-    "servo_max_degrees": 180,
-    "servo_initial_degrees": 90,
-    "servo_step_degrees": 5,
-    "servo_min_pulse_width": 0.0005,
-    "servo_max_pulse_width": 0.0025,
+    "pan_enabled": True,
     "stepper_pins": [18, 23, 24, 25],
     "stepper_steps_per_rev": 4096,
     "stepper_step_delay": 0.0025,
@@ -65,7 +58,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pan_max_degrees": 80,
     "pan_step_degrees": 5,
     "pan_invert": False,
-    "tilt_invert": False,
     "manual_control_settle_seconds": 2,
 }
 
@@ -276,8 +268,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .control-pad {
       display: grid;
-      grid-template-columns: repeat(3, 46px);
-      grid-template-rows: repeat(3, 46px);
+      grid-template-columns: repeat(2, 46px);
       gap: 8px;
       justify-content: center;
     }
@@ -289,10 +280,6 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 22px;
       line-height: 1;
     }
-    .control-up { grid-column: 2; grid-row: 1; }
-    .control-left { grid-column: 1; grid-row: 2; }
-    .control-right { grid-column: 3; grid-row: 2; }
-    .control-down { grid-column: 2; grid-row: 3; }
     .control-state {
       min-height: 18px;
       color: var(--muted);
@@ -365,11 +352,9 @@ INDEX_HTML = r"""<!doctype html>
         <h2>Camera Control</h2>
         <div class="control-panel">
           <label class="control-toggle">Control mode<input id="control-mode" type="checkbox"></label>
-          <div class="control-pad" aria-label="Pan and tilt controls">
-            <button class="control-up" type="button" data-move="up" title="Tilt up" aria-label="Tilt up">&#8593;</button>
+          <div class="control-pad" aria-label="Pan controls">
             <button class="control-left" type="button" data-move="left" title="Pan left" aria-label="Pan left">&#8592;</button>
             <button class="control-right" type="button" data-move="right" title="Pan right" aria-label="Pan right">&#8594;</button>
-            <button class="control-down" type="button" data-move="down" title="Tilt down" aria-label="Tilt down">&#8595;</button>
           </div>
           <div id="control-state" class="control-state">Unavailable</div>
         </div>
@@ -423,8 +408,6 @@ INDEX_HTML = r"""<!doctype html>
     const controlStateEl = document.getElementById('control-state');
     const moveButtons = Array.from(document.querySelectorAll('[data-move]'));
     const keyDirections = new Map([
-      ['ArrowUp', 'up'],
-      ['ArrowDown', 'down'],
       ['ArrowLeft', 'left'],
       ['ArrowRight', 'right'],
     ]);
@@ -476,12 +459,12 @@ INDEX_HTML = r"""<!doctype html>
       const canMove = Boolean(control.available && control.mode && !controlBusy && !moveInFlight);
       for (const button of moveButtons) button.disabled = !canMove;
       if (!control.enabled) {
-        controlStateEl.textContent = control.mode ? 'Control mode on | motors disabled in config' : 'Motors disabled in config';
+        controlStateEl.textContent = control.mode ? 'Control mode on | motor disabled in config' : 'Motor disabled in config';
       } else if (!control.available) {
         const detail = control.error || 'Unavailable';
         controlStateEl.textContent = control.mode ? `${detail} | control mode on` : detail;
       } else {
-        controlStateEl.textContent = `pan ${fmtDeg(control.pan_degrees)} deg | tilt ${fmtDeg(control.tilt_degrees)} deg`;
+        controlStateEl.textContent = `pan ${fmtDeg(control.pan_degrees)} deg`;
       }
     }
 
@@ -759,7 +742,7 @@ def clamp_float(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-class PanTiltController:
+class PanController:
     HALF_STEP_SEQUENCE = (
         (1, 0, 0, 0),
         (1, 1, 0, 0),
@@ -773,17 +756,9 @@ class PanTiltController:
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.lock = threading.RLock()
-        self.enabled = bool(config.get("pan_tilt_enabled", False))
+        self.enabled = bool(config.get("pan_enabled", True))
         self.available = False
-        self.error = "pan/tilt disabled"
-        self.servo_pin = int(config["servo_pin"])
-        self.servo_min = float(config["servo_min_degrees"])
-        self.servo_max = float(config["servo_max_degrees"])
-        self.servo_step = float(config["servo_step_degrees"])
-        self.servo_min_pulse_width = float(config["servo_min_pulse_width"])
-        self.servo_max_pulse_width = float(config["servo_max_pulse_width"])
-        self.tilt_degrees = clamp_float(float(config["servo_initial_degrees"]), self.servo_min, self.servo_max)
-        self.tilt_invert = bool(config.get("tilt_invert", False))
+        self.error = "pan disabled"
         self.stepper_pins = [int(pin) for pin in config["stepper_pins"]]
         self.stepper_steps_per_rev = int(config["stepper_steps_per_rev"])
         self.stepper_step_delay = float(config["stepper_step_delay"])
@@ -793,36 +768,25 @@ class PanTiltController:
         self.pan_invert = bool(config.get("pan_invert", False))
         self.pan_degrees = 0.0
         self.sequence_index = 0
-        self._servo: Any | None = None
         self._stepper_outputs: list[Any] = []
 
         if not self.enabled:
             return
 
         try:
-            from gpiozero import AngularServo, OutputDevice
+            from gpiozero import OutputDevice
 
             self._stepper_outputs = [
                 OutputDevice(pin, active_high=True, initial_value=False) for pin in self.stepper_pins
             ]
-            self._servo = AngularServo(
-                self.servo_pin,
-                initial_angle=self.tilt_degrees,
-                min_angle=self.servo_min,
-                max_angle=self.servo_max,
-                min_pulse_width=self.servo_min_pulse_width,
-                max_pulse_width=self.servo_max_pulse_width,
-                frame_width=0.02,
-            )
             self.available = True
             self.error = ""
             logging.info(
-                "pan/tilt ready: servo GP%s, stepper GP%s",
-                self.servo_pin,
+                "pan ready: stepper GP%s",
                 ",".join(str(pin) for pin in self.stepper_pins),
             )
         except Exception as exc:  # noqa: BLE001 - hardware stack may be absent on dev hosts
-            self.error = f"pan/tilt unavailable: {exc}"
+            self.error = f"pan unavailable: {exc}"
             logging.warning(self.error)
             self.close()
 
@@ -833,39 +797,22 @@ class PanTiltController:
                 "available": self.available,
                 "error": self.error,
                 "pan_degrees": round(self.pan_degrees, 2),
-                "tilt_degrees": round(self.tilt_degrees, 2),
                 "pan_min_degrees": self.pan_min,
                 "pan_max_degrees": self.pan_max,
-                "tilt_min_degrees": self.servo_min,
-                "tilt_max_degrees": self.servo_max,
             }
 
     def move(self, direction: str) -> None:
         with self.lock:
             if not self.enabled:
-                raise RuntimeError("pan/tilt is disabled")
+                raise RuntimeError("pan is disabled")
             if not self.available:
-                raise RuntimeError(self.error or "pan/tilt is unavailable")
-            if direction == "up":
-                self.move_tilt(1)
-            elif direction == "down":
-                self.move_tilt(-1)
-            elif direction == "left":
+                raise RuntimeError(self.error or "pan is unavailable")
+            if direction == "left":
                 self.move_pan(-1)
             elif direction == "right":
                 self.move_pan(1)
             else:
-                raise ValueError("direction must be up, down, left, or right")
-
-    def move_tilt(self, direction: int) -> None:
-        if self.tilt_invert:
-            direction *= -1
-        target = clamp_float(self.tilt_degrees + (self.servo_step * direction), self.servo_min, self.servo_max)
-        if target == self.tilt_degrees:
-            return
-        if self._servo is not None:
-            self._servo.angle = target
-        self.tilt_degrees = target
+                raise ValueError("direction must be left or right")
 
     def move_pan(self, direction: int) -> None:
         if self.pan_invert:
@@ -906,12 +853,6 @@ class PanTiltController:
                 except Exception:  # noqa: BLE001
                     pass
             self._stepper_outputs = []
-            if self._servo is not None:
-                try:
-                    self._servo.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                self._servo = None
 
 
 class CameraService:
@@ -936,7 +877,7 @@ class CameraService:
         self.latest_frame_at: float | None = None
         self.control_mode = False
         self.motion_suppressed_until = 0.0
-        self.pan_tilt = PanTiltController(self.config)
+        self.pan_controller = PanController(self.config)
 
     def start(self) -> None:
         self.thread.start()
@@ -944,7 +885,7 @@ class CameraService:
     def stop(self) -> None:
         self.stop_event.set()
         self.thread.join(timeout=8)
-        self.pan_tilt.close()
+        self.pan_controller.close()
 
     def update_settings(self, changes: dict[str, Any]) -> None:
         with self.lock:
@@ -976,7 +917,7 @@ class CameraService:
             control_mode = self.control_mode
             motion_suppressed = self.motion_suppressed_locked(now)
             settle_remaining = max(0.0, self.motion_suppressed_until - now)
-        status = self.pan_tilt.status()
+        status = self.pan_controller.status()
         status.update(
             {
                 "mode": control_mode,
@@ -1009,7 +950,7 @@ class CameraService:
             if not self.control_mode:
                 raise RuntimeError("enable control mode before moving the camera")
             self.suppress_motion_locked()
-        self.pan_tilt.move(direction)
+        self.pan_controller.move(direction)
         with self.lock:
             self.suppress_motion_locked()
         return {"ok": True, "control": self.control_status()}
@@ -1239,17 +1180,12 @@ def validate_config(config: dict[str, Any]) -> None:
     stepper_pins = config.get("stepper_pins", [])
     if not isinstance(stepper_pins, list) or len(stepper_pins) != 4:
         raise ValueError("stepper_pins must list four GPIO pins")
-    for pin in [config["servo_pin"], *stepper_pins]:
+    for pin in stepper_pins:
         if not isinstance(pin, int) or pin < 0:
             raise ValueError("GPIO pins must be non-negative integers")
-    if float(config["servo_min_degrees"]) >= float(config["servo_max_degrees"]):
-        raise ValueError("servo_min_degrees must be less than servo_max_degrees")
-    if not (float(config["servo_min_degrees"]) <= float(config["servo_initial_degrees"]) <= float(config["servo_max_degrees"])):
-        raise ValueError("servo_initial_degrees must be inside the servo range")
     if float(config["pan_min_degrees"]) >= float(config["pan_max_degrees"]):
         raise ValueError("pan_min_degrees must be less than pan_max_degrees")
     for key in (
-        "servo_step_degrees",
         "stepper_steps_per_rev",
         "stepper_step_delay",
         "pan_step_degrees",

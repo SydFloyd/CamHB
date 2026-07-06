@@ -27,14 +27,7 @@
   "bitrate": 2000000,
   "retention_days": 14,
   "max_storage_mb": 20480,
-  "pan_tilt_enabled": true,
-  "servo_pin": 17,
-  "servo_min_degrees": 0,
-  "servo_max_degrees": 180,
-  "servo_initial_degrees": 90,
-  "servo_step_degrees": 5,
-  "servo_min_pulse_width": 0.0005,
-  "servo_max_pulse_width": 0.0025,
+  "pan_enabled": true,
   "stepper_pins": [18, 23, 24, 25],
   "stepper_steps_per_rev": 4096,
   "stepper_step_delay": 0.0025,
@@ -42,6 +35,5 @@
   "pan_max_degrees": 80,
   "pan_step_degrees": 5,
   "pan_invert": false,
-  "tilt_invert": false,
   "manual_control_settle_seconds": 2
 }

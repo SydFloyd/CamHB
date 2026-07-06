@@ -12,7 +12,7 @@ It avoids MotionEye, MMAL, V4L2 compatibility wrappers, Flask, OpenCV, and datab
 - Shows a constant local preview from the same low-resolution motion frames.
 - Records high-resolution MP4 clips during configured time windows.
 - Includes roughly `pre_record_seconds` of footage before detected motion.
-- Provides optional web pan/tilt controls for a GPIO stepper and servo mount.
+- Provides optional web pan controls for a GPIO stepper mount.
 - Stores recordings by date under `recordings/`.
 - Serves a local web portal for playback, deletion, and basic tuning.
 - Prunes old footage by retention days and maximum storage size.
@@ -48,20 +48,16 @@ http://<pi-ip-address>:8080/
 
 The portal opens on the live feed. This preview is intentionally the low-resolution monitoring stream, so it is lightweight and does not start a second camera process. Recording no longer halts the live feed.
 
-## Pan/Tilt Control
+## Pan Control
 
-The example config enables a small pan/tilt mount:
+The example config enables a small pan mount:
 
-- Tilt servo signal on GP17.
 - Stepper driver IN1, IN2, IN3, and IN4 on GP18, GP23, GP24, and GP25.
-- Servo tilt range from 0 to 180 degrees, starting at 90 degrees.
 - Stepper pan range from -80 to +80 degrees around the position it is in when CamHB starts.
 
-Open **Camera Control** in the web portal and enable **Control mode** before using the arrow buttons or keyboard arrow keys. Holding an arrow button or key repeats movement until released. Control mode disarms motion recording while you move the camera and for `manual_control_settle_seconds` after you leave control mode, so manual movement does not create motion clips.
+Open **Camera Control** in the web portal and enable **Control mode** before using the left/right arrow buttons or keyboard Left/Right keys. Holding an arrow button or key repeats movement until released. Control mode disarms motion recording while you move the camera and for `manual_control_settle_seconds` after you leave control mode, so manual movement does not create motion clips.
 
-If the controls move the wrong way, flip `pan_invert` or `tilt_invert` in `config.json`. If the portal says the motors are disabled in config, set `pan_tilt_enabled` to `true`. Older configs can also copy the `pan_tilt_*`, `servo_*`, `stepper_*`, `pan_*`, and `tilt_invert` fields from `config.example.json` when you want the values visible in the file.
-
-Some servos jitter when driven directly from a Raspberry Pi GPIO PWM signal. If tilt shakes in place, use a separate 5V servo supply with a shared ground, avoid driving hard against the mechanical end stops, tune `servo_min_pulse_width` and `servo_max_pulse_width`, or use a hardware-timed PWM path such as `pigpio` or a PCA9685 servo driver.
+If the controls move the wrong way, flip `pan_invert` in `config.json`. If the portal says the motor is disabled in config, set `pan_enabled` to `true`. Older configs can also copy the `pan_enabled`, `stepper_*`, and `pan_*` fields from `config.example.json` when you want the values visible in the file.
 
 ## Install As A Service
 
