@@ -324,7 +324,6 @@ INDEX_HTML = r"""<!doctype html>
     @media (max-width: 920px) {
       main { grid-template-columns: 1fr; }
       video { max-height: 58vh; }
-      aside { order: -1; }
       .clips { max-height: 34vh; }
     }
   </style>
