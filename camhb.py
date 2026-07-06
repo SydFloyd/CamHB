@@ -268,7 +268,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .control-pad {
       display: grid;
-      grid-template-columns: repeat(2, 46px);
+      grid-template-columns: repeat(3, 46px);
       gap: 8px;
       justify-content: center;
     }
@@ -353,6 +353,7 @@ INDEX_HTML = r"""<!doctype html>
           <label class="control-toggle">Control mode<input id="control-mode" type="checkbox"></label>
           <div class="control-pad" aria-label="Pan controls">
             <button class="control-left" type="button" data-move="left" title="Pan left" aria-label="Pan left">&#8592;</button>
+            <button id="return-zero" type="button" title="Return to 0" aria-label="Return to 0">0</button>
             <button class="control-right" type="button" data-move="right" title="Pan right" aria-label="Pan right">&#8594;</button>
           </div>
           <div id="control-state" class="control-state">Unavailable</div>
@@ -407,6 +408,7 @@ INDEX_HTML = r"""<!doctype html>
     const controlModeEl = document.getElementById('control-mode');
     const controlStateEl = document.getElementById('control-state');
     const moveButtons = Array.from(document.querySelectorAll('[data-move]'));
+    const returnZeroButton = document.getElementById('return-zero');
     const keyDirections = new Map([
       ['ArrowLeft', 'left'],
       ['ArrowRight', 'right'],
@@ -458,6 +460,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       const canMove = Boolean(control.available && control.mode && !controlBusy && !moveInFlight);
       for (const button of moveButtons) button.disabled = !canMove;
+      returnZeroButton.disabled = !canMove || Math.abs(Number(control.pan_degrees || 0)) < 0.01;
       if (!control.enabled) {
         controlStateEl.textContent = control.mode ? 'Control mode on | motor disabled in config' : 'Motor disabled in config';
       } else if (!control.available) {
@@ -580,6 +583,23 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    async function returnToZero() {
+      if (moveInFlight || controlBusy || returnZeroButton.disabled) return;
+      stopMove();
+      moveInFlight = true;
+      renderControl();
+      try {
+        const result = await api('/api/return-zero', {method: 'POST', body: JSON.stringify({})});
+        renderControl(result.control);
+      } catch (err) {
+        stateEl.textContent = String(err.message || err);
+        await refresh();
+      } finally {
+        moveInFlight = false;
+        renderControl();
+      }
+    }
+
     function startRepeatedMove(direction) {
       stopMove();
       moveCamera(direction);
@@ -608,6 +628,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     controlModeEl.addEventListener('change', () => setControlMode(controlModeEl.checked));
+    returnZeroButton.addEventListener('click', returnToZero);
     for (const button of moveButtons) {
       button.addEventListener('pointerdown', startMove);
       button.addEventListener('pointerleave', stopMove);
@@ -833,6 +854,9 @@ class PanController:
         if self.pan_invert:
             direction *= -1
         target = self.next_pan_target(direction)
+        self.move_to_pan(target)
+
+    def move_to_pan(self, target: float) -> None:
         delta = target - self.pan_degrees
         if delta == 0:
             return
@@ -847,6 +871,14 @@ class PanController:
             time.sleep(self.stepper_step_delay)
         self.release_stepper()
         self.pan_degrees = target
+
+    def return_to_zero(self) -> None:
+        with self.lock:
+            if not self.enabled:
+                raise RuntimeError("pan is disabled")
+            if not self.available:
+                raise RuntimeError(self.error or "pan is unavailable")
+            self.move_to_pan(0.0)
 
     def next_pan_target(self, direction: int) -> float:
         low = -self.pan_limit
@@ -980,6 +1012,16 @@ class CameraService:
                 raise RuntimeError("enable control mode before moving the camera")
             self.suppress_motion_locked()
         self.pan_controller.move(direction)
+        with self.lock:
+            self.suppress_motion_locked()
+        return {"ok": True, "control": self.control_status()}
+
+    def return_camera_to_zero(self) -> dict[str, Any]:
+        with self.lock:
+            if not self.control_mode:
+                raise RuntimeError("enable control mode before moving the camera")
+            self.suppress_motion_locked()
+        self.pan_controller.return_to_zero()
         with self.lock:
             self.suppress_motion_locked()
         return {"ok": True, "control": self.control_status()}
@@ -1289,6 +1331,8 @@ class CamHandler(BaseHTTPRequestHandler):
                 self.send_json(self.app.set_control_mode(bool(body.get("enabled", False))))
             elif path == "/api/move":
                 self.send_json(self.app.move_camera(str(body["direction"])))
+            elif path == "/api/return-zero":
+                self.send_json(self.app.return_camera_to_zero())
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:  # noqa: BLE001
