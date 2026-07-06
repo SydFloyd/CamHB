@@ -599,7 +599,8 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function isTypingTarget(target) {
-      return target?.closest?.('input, textarea, select, [contenteditable="true"]');
+      const control = target?.closest?.('input, textarea, select, [contenteditable="true"]');
+      return control && control !== controlModeEl;
     }
 
     function canUseKeyboardControl() {
